@@ -1,0 +1,41 @@
+# === Node / JS ===
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+*.log
+
+# === Build 输出 ===
+dist/
+dist-ssr/
+coverage/
+
+# === 缓存 ===
+.vite/
+.cache/
+.tmp/
+
+# === 环境变量 ===
+.env
+.env.local
+.env.*.local
+
+# === 编辑器 / 系统文件 ===
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# === 重要说明 ===
+# package-lock.json
+# pnpm-lock.yaml
+# yarn.lock
+
+# === 后端 ===
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.sqlite3
+var/*.db
+logs/
