@@ -15,7 +15,7 @@ app = FastAPI(title="AI Roleplay BFF (FastAPI)")
 # 允许前端跨域（按需收紧）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产建议改成你的前端域名
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
