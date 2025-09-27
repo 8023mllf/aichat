@@ -3,3 +3,13 @@
 @tailwind utilities;
 
 :root { color-scheme: light dark; }
+
+html, body, #root { height: 100%; }
+
+/* 兼容不同版本的 canvas-nest： */
+#c_n1, canvas.canvas-nest, .canvas-nest {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 0 !important;          /* 在 body 背景之上，内容之下 */
+  pointer-events: none !important; /* 不影响页面点击/拖拽 */
+}

@@ -78,3 +78,13 @@ export async function getIsiToken() {
   if (!r.ok) throw new Error(await r.text());
   return await r.json();
 }
+
+
+// src/api.ts 里追加
+export async function fetchCategoriesMeta(): Promise<{
+  traits: string[]; background: string[]; style: string[];
+}> {
+  const r = await fetch(`${API_BASE}/api/meta/categories`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}

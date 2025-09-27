@@ -4,6 +4,8 @@ import os
 import time
 import base64
 import uuid
+# 顶部 import 区补一行
+from app.personas import get_persona, build_system_prompt  # 载入系统提示构建器
 from typing import Any, AsyncGenerator, Dict, List, Optional
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from openai import AsyncOpenAI
 
 from app.db import append_message, get_recent_messages, get_session, create_session
 from app.personas import get_persona  # 仍然使用已有的 get_persona
+from app.personas import get_taxonomies
 from app.isi import create_isi_token, tts_stream_via_isi
 
 DASH_BASE_URL = os.getenv("DASH_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
@@ -56,14 +59,25 @@ def load_custom_personas() -> Dict[str, Any]:
         return {}
 
 
+# 找到函数：def save_custom_persona_to_store(slug: str, persona: Dict[str, Any], file_url: Optional[str] = None):
+# 用下面整段替换该函数体（保持函数签名不变）
+
 def save_custom_persona_to_store(slug: str, persona: Dict[str, Any], file_url: Optional[str] = None):
     """把 persona 写入 custom_personas.json（覆盖或新增）"""
     _ensure_custom_store()
     d = load_custom_personas()
     # 保证有 name 与 persona 内容
     entry = dict(persona)
+    # —— 标准化基本字段 —— #
     entry.setdefault("name", persona.get("name", f"custom-{slug}"))
     entry["personaSlug"] = slug
+    entry["slug"] = slug
+    # —— 生成并保存 systemPrompt，确保对话时能直接使用这一版提示词 —— #
+    try:
+        entry["systemPrompt"] = build_system_prompt(entry)  # type: ignore
+    except Exception:
+        # 即便生成失败，也不影响保存
+        pass
     if file_url:
         entry["file"] = file_url
     d[slug] = entry
@@ -280,6 +294,12 @@ async def list_custom_personas_route():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/meta/categories")
+async def categories_meta():
+    """
+    返回可用的分类标签（性格/背景/语言风格）供前端展示与筛选。
+    """
+    return get_taxonomies()
 
 # ========================
 # debug / routes listing

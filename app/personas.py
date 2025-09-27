@@ -1,4 +1,8 @@
 from typing import TypedDict, Dict, List, Optional, Union
+# 顶部 import 补充（如果已经有就不用重复加）
+from pathlib import Path
+import json
+
 
 # —— 人设字段 ——
 class Persona(TypedDict, total=False):
@@ -126,8 +130,86 @@ PERSONAS: Dict[str, Persona] = {
     },
 }
 
+# app/personas.py 追加在文件靠后处（或任意位置，但要在最末行之前）
+
+# 默认分类（可按需扩充）
+DEFAULT_TAXONOMY = {
+    "traits": ["甜美","可爱","傲娇","高冷","霸道","热情","幽默","呆萌","故作深沉","温柔","毒舌","元气","理性","感性"],
+    "background": ["动漫","游戏","电影","电视剧","明星","自创"],
+    "style": ["严谨","科普","诗意","冷面","活泼","克制","鼓励","幽默","高冷"]
+}
+
+def get_taxonomies():
+    """
+    汇总站内所有人格里出现过的 traits/background/style，
+    兼容两种写法：
+      - persona["categories"] = {"traits":[...], "background":[...], "style":[...]}
+      - persona["traits"], persona["background"], persona["style"]
+    返回去重后的列表，并保证至少包含 DEFAULT_TAXONOMY。
+    """
+    try:
+        personas = PERSONAS  # 你文件里存放所有人格的 dict
+        # 合并自定义人格
+        try:
+            _custom = _load_custom_personas()
+            personas = {**personas, **_custom}
+        except Exception:
+            pass
+    except NameError:
+        personas = {}
+
+    seen = {k: set(v) for k, v in DEFAULT_TAXONOMY.items()}
+
+    for p in personas.values():
+        cats = (p.get("categories") or {})
+        for key in ("traits", "background", "style"):
+            for v in (cats.get(key) or []):
+                seen[key].add(str(v))
+
+        # 兼容旧字段
+        for key in ("traits", "background", "style"):
+            for v in (p.get(key) or []):
+                seen[key].add(str(v))
+
+    return {k: sorted(list(v)) for k, v in seen.items()}
+
+# 在文件中合适位置（如 get_persona 之前）新增：自定义人格加载工具
+# ---- 自定义人格存储（由 /api/persona/custom 写入 app/custom_personas.json） ----
+_CUSTOM_PERSONAS_PATH = Path(__file__).parent / "custom_personas.json"
+
+def _load_custom_personas() -> Dict[str, Persona]:
+    try:
+        s = _CUSTOM_PERSONAS_PATH.read_text(encoding="utf-8")
+        data = json.loads(s or "{}")  # {slug: persona_dict}
+        fixed: Dict[str, Persona] = {}
+        for slug, p in data.items():
+            if not isinstance(p, dict):
+                continue
+            pp = dict(p)
+            pp.setdefault("slug", slug)
+            pp.setdefault("name", pp.get("name", slug))
+            fixed[slug] = pp  # type: ignore
+        return fixed
+    except Exception:
+        return {}
+
+
+# 用下面整段替换原来的 get_persona
 def get_persona(slug: Optional[str]) -> Persona:
-    """按 slug 取人设；无效则回退到 generic-guide。"""
-    if slug and slug in PERSONAS:
-        return PERSONAS[slug]
+    """按 slug 取人设；优先内置，其次自定义；无效回退到 generic-guide。"""
+    if slug:
+        if slug in PERSONAS:
+            return PERSONAS[slug]
+        # 尝试在自定义库里查找（热加载）
+        custom = _load_custom_personas()
+        if slug in custom:
+            p = custom[slug]
+            # 若没有预生成的 systemPrompt，则临时生成一份
+            if not p.get("systemPrompt"):
+                try:
+                    p = dict(p)
+                    p["systemPrompt"] = build_system_prompt(p)  # type: ignore
+                except Exception:
+                    pass
+            return p
     return PERSONAS["generic-guide"]
