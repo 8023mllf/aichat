@@ -4,18 +4,42 @@ import { Link, useSearchParams, useNavigate } from "react-router-dom";
 import { fetchCategoriesMeta } from "../api";
 import * as PM from "../promos";
 
+/** 统一获取 slug */
+function getSlug(p: any): string {
+  return p?.promoSlug || p?.personaSlug || p?.slug || "";
+}
+
+/** 去重：按 slug */
+function dedupeBySlug<T extends { [k: string]: any }>(list: T[]): T[] {
+  const m = new Map<string, T>();
+  for (const it of list) {
+    const s = getSlug(it);
+    if (s) m.set(s, it);
+  }
+  return Array.from(m.values());
+}
+
 // —— 汇总所有可见人物：优先使用 listPromos()，否则合并自定义 + 预置 —— //
 function useAllPromos(): any[] {
   const fromHelper = (PM as any).listPromos?.();
-  if (fromHelper) return fromHelper;
+  if (fromHelper) {
+    // 保障有 categories/tags 字段，并做一次去重
+    const norm = (fromHelper as any[]).map((p) => ({
+      ...p,
+      categories: p.categories ?? p.tags ?? {},
+    }));
+    return dedupeBySlug(norm);
+  }
 
   const presets: any[] = (PM as any).PROMOS || [];
   const custom: any[] = (PM as any).listCustomPromos ? (PM as any).listCustomPromos() : [];
-  // 规范化：确保每个 promo 都有 .categories（用于后续筛选）
-  return [...custom, ...presets].map((p: any) => ({
+
+  const merged = [...custom, ...presets].map((p: any) => ({
     ...p,
     categories: p.categories ?? p.tags ?? {},
   }));
+
+  return dedupeBySlug(merged);
 }
 
 // 时间段枚举（可保留或删除）
@@ -44,7 +68,7 @@ function useSearchState(): [SearchShape, (next: Partial<SearchShape>) => void] {
     const s = new URLSearchParams(sp);
     const setList = (k: string, arr?: string[]) => {
       s.delete(k);
-      (arr || []).forEach(v => s.append(k, v));
+      (arr || []).forEach((v) => s.append(k, v));
     };
     if (next.trait !== undefined) setList("trait", next.trait || []);
     if (next.bg !== undefined) setList("bg", next.bg || []);
@@ -83,8 +107,6 @@ export default function CategoriesPage() {
 
   const all = useAllPromos();
   const [q, setQ] = useSearchState();
-
-  // <-- 新增：用于整张卡片跳转 -->
   const navigate = useNavigate();
 
   const filtered = useMemo(() => {
@@ -104,14 +126,12 @@ export default function CategoriesPage() {
     const hasAll = (need: string[] | undefined, owned?: string[] | string) => {
       if (!need || need.length === 0) return true;
       if (!owned) return false;
-      // owned may be array or single string
       const ownedArr = Array.isArray(owned) ? owned : [owned];
-      return need.every(x => ownedArr.includes(x));
+      return need.every((x) => ownedArr.includes(x));
     };
 
-    return all
+    const list = all
       .filter((p) => {
-        // 规范读取：优先 p.categories（旧字段），否则 p.tags（新字段）
         const cat = p.categories ?? p.tags ?? {};
         const okTrait = hasAll(q.trait, cat.traits);
         const okBg    = hasAll(q.bg, cat.background);
@@ -123,6 +143,9 @@ export default function CategoriesPage() {
         if (q.sort === "hot") return (b.hot || 0) - (a.hot || 0);
         return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
       });
+
+    // ✅ 再做一遍去重，防止来源重复或筛选切换后残留
+    return dedupeBySlug(list);
   }, [all, q]);
 
   const clearAll = () => setQ({ trait: [], bg: [], style: [], time: null });
@@ -158,33 +181,39 @@ export default function CategoriesPage() {
           <RowRadio label="时间" options={TIME} value={q.time || ""} onChange={(v) => setQ({ time: v || null })} />
         </section>
 
-        {/* 结果列表 */}
-        <section className="mt-6 grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+        {/* 结果列表：竖版卡片 9/14，避免裁剪 */}
+        <section className="mt-6 grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {filtered.map((p: any) => {
             const cat = p.categories ?? p.tags ?? {};
             const traits = cat.traits || [];
             const bg = cat.background ? (Array.isArray(cat.background) ? cat.background : [cat.background]) : [];
             const style = cat.style || [];
-            const targetSlug = p.personaSlug || p.promoSlug;
+            const slug = getSlug(p); // 稳定 key + 跳转
 
             return (
               <article
-                key={targetSlug}
-                // 使整张卡可点击：cursor-pointer、role、tabIndex、键盘事件
+                key={slug}
                 className="relative border rounded-2xl overflow-hidden bg-white/80 backdrop-blur shadow hover:shadow-md transition cursor-pointer"
-                onClick={() => navigate(`/chat/${targetSlug}`)}
+                onClick={() => navigate(`/chat/${slug}`)}
                 role="button"
                 tabIndex={0}
                 onKeyDown={(e: React.KeyboardEvent) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    navigate(`/chat/${targetSlug}`);
+                    navigate(`/chat/${slug}`);
                   }
                 }}
                 aria-label={`进入 ${p.name} 的对话`}
               >
-                <div className="relative aspect-[16/10] overflow-hidden">
-                  <img src={p.file} alt={p.name} className="w-full h-full object-cover" />
+                <div className="relative aspect-[5/7] sm:aspect-[2/3] lg:aspect-[4/5] overflow-hidden bg-gray-50">
+                  {/* ✅ object-contain：尽量不裁图 */}
+                  <img
+                    src={p.file}
+                    alt={p.name}
+                    className="w-full h-full object-contain"
+                    draggable={false}
+                    onDragStart={(e) => e.preventDefault()}
+                  />
                   <div className="absolute left-3 bottom-3 text-xs text-white/90 space-y-1 z-10">
                     <div className="text-sm font-semibold text-white drop-shadow">{p.name}</div>
                     {!!traits.length && <div className="opacity-90">#{traits.join(" #")}</div>}
@@ -194,21 +223,16 @@ export default function CategoriesPage() {
                   <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black/55 to-transparent" />
                 </div>
 
-                <div className="p-4">
-                  <div className="mt-1 flex items-center justify-between text-sm text-gray-500">
+                <div className="p-3">
+                  <div className="mt-1 flex items-center justify-between text-xs text-gray-500">
                     <span>{p.createdAt ? new Date(p.createdAt).toLocaleDateString() : "—"}</span>
                     <span>热度 {p.hot ?? 0}</span>
                   </div>
-                  <div className="mt-3">
-                    {/* 保留底部链接（仍可单独点击），它不会阻止整卡点击 */}
+                  <div className="mt-2">
                     <Link
-                      to={`/chat/${targetSlug}`}
-                      onClick={(e) => {
-                        // 避免因为在未来卡片内放置更多交互控件时触发双重行为，
-                        // 这里 stopPropagation 可以保证只由 Link 控制跳转（不是必须）
-                        e.stopPropagation();
-                      }}
-                      className="inline-block px-3 py-1.5 rounded-lg bg-indigo-600 text-white"
+                      to={`/chat/${slug}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-block px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-sm"
                     >
                       进入对话
                     </Link>

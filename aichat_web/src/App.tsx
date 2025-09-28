@@ -5,6 +5,9 @@ import CategoriesPage from "./pages/Categories";
 import CreatePage from "./pages/Create";
 import ChatPage from "./pages/Chat";
 import TheatrePage from "./pages/Theatre";
+import SearchPage from "./pages/Search";
+import * as PM from "./promos";
+
 
 /* ========= 公共类型与数据 ========= */
 type Promo = {
@@ -384,6 +387,63 @@ function ActionBubblesRow({
   );
 }
 
+
+// 用于推荐栏目：把 promos 统一成 {name,promoSlug,file,tags} 的结构
+type AnyPromo = {
+  name: string;
+  promoSlug?: string;
+  personaSlug?: string;
+  slug?: string;
+  file: string;
+  tags?: {
+    traits?: string[];        // 性格
+    background?: string | string[]; // 背景/大类
+    style?: string[];         // 风格
+  };
+  categories?: { traits?: string[]; background?: string | string[]; style?: string[] };
+};
+
+type Item = { name: string; promoSlug: string; file: string };
+
+// 取站内所有人物（兼容 listPromos() / PROMOS 两种来源）
+function allPromosForHome(): AnyPromo[] {
+  const fromHelper = (PM as any).listPromos?.();
+  const raw: AnyPromo[] = fromHelper || ((PM as any).PROMOS || []);
+  return raw.map((p: any) => ({
+    ...p,
+    // 统一 tags 字段：优先 p.tags，否则 p.categories
+    tags: p.tags ?? p.categories ?? {},
+  }));
+}
+
+// 判断一个人物是否匹配某个类别（title 就是 “#动漫 / #游戏 / …” 里的文字）
+function fitsCategory(p: AnyPromo, cat: string): boolean {
+  const tags = p.tags || {};
+  const toArr = (v: any) => (Array.isArray(v) ? v : v ? [v] : []);
+  const has = (v: any) => toArr(v).some((x) => String(x).includes(cat));
+
+  // 优先按 background 匹配；其次 traits/style 里包含该词也算
+  const bgOk = has(tags.background);
+  const traitsOk = has(tags.traits);
+  const styleOk = has(tags.style);
+
+  // 兼容“历史人物”这类可能与背景词存在包含关系的情况
+  const bgContainOk =
+    typeof tags.background === "string" && cat.includes(tags.background as string);
+
+  return bgOk || traitsOk || styleOk || bgContainOk;
+}
+
+// 标准化成 CategoryRow 需要的 Item
+function toItem(p: AnyPromo): Item {
+  return {
+    name: p.name,
+    promoSlug: p.promoSlug || p.personaSlug || p.slug || "",
+    file: p.file,
+  };
+}
+
+
 /* ========= 首页（轮播 + 推荐） ========= */
 function Home() {
   const navigate = useNavigate();
@@ -408,7 +468,6 @@ function Home() {
   ];
 
   /* —— 分类横滑（支持鼠标拖拽；有限列表；“查看更多”可点击） —— */
-  type Item = { name: string; promoSlug: string; file: string };
 
   const CategoryRow = ({
     title,
@@ -588,26 +647,37 @@ function Home() {
     );
   };
 
-  // 示例数据（真实接入后替换 makeMany 即可）
-  const makeMany = (count: number): Item[] =>
-    Array.from({ length: count }, (_, i) => {
-      const base = PROMOS[i % PROMOS.length];
-      return { ...base };
-    });
+// 用真实数据构造推荐栏目（每栏只放匹配该 # 类别的人设）
+const ALL = allPromosForHome();
 
-  const CATEGORIES: { title: string; items: Item[]; desc?: string }[] = [
-    { title: "动漫", items: makeMany(10), desc: "这里可以和你喜欢的动漫角色畅聊，身临其境地感受动漫的魅力，和 TA 一起参加冒险，或者向 TA 表达心意。快来吧。" },
-    { title: "游戏", items: makeMany(12), desc: "开黑上分、刷本打宝、选择职业与加点；和熟悉的游戏角色互动，定制属于你的支线与结局。" },
-    { title: "电影", items: makeMany(8),  desc: "与经典电影人物对话，重温名场面；解锁角色幕后设定，聊聊你的平行结局。" },
-    { title: "工具", items: makeMany(6),  desc: "超实用 AI 工具，这里应有尽有，快来体验。" },
-    { title: "明星", items: makeMany(7),  desc: "模拟采访、粉丝应援、花式互动；和你喜爱的明星来一场近距离对话。" },
-    { title: "历史人物", items: makeMany(9),  desc: "穿越对话先贤名将，讨论治国、兵法与学术；让历史在对谈中“活”起来。" },
-    { title: "甜系女友", items: makeMany(10),  desc: "软萌治愈、贴心陪伴、甜度超标；每天都能被温柔环绕。" },
-    { title: "霸道总裁", items: makeMany(8),  desc: "商战剧情、强势偏爱、只对你温柔；从办公室到宴会场，全是你的主场。" },
-    { title: "傲娇女友", items: makeMany(8),  desc: "嘴上不饶人、心里很在乎；解锁 tsundere 的傲娇与撒糖两面性。" },
-    { title: "高冷御姐", items: makeMany(8),  desc: "成熟理性、气场拉满；偶尔的温柔破防更让人心动。" },
-    { title: "系统", items: makeMany(5),  desc: "穿越/升级/养成系统上线！随机任务、隐藏奖励、专属成长线等你探索。" },
-  ];
+const CATEGORY_TITLES = [
+  "动漫", "游戏", "电影", "工具", "明星", "历史人物",
+  "甜系女友", "霸道总裁", "傲娇女友", "高冷御姐", "系统",
+];
+
+// 推荐栏目每个 # 类别的文案
+const CATE_DESC: Record<string, string> = {
+  动漫: "这里可以和你喜欢的动漫角色畅聊，身临其境地感受动漫的魅力，和 TA 一起参加冒险，或者向 TA 表达心意。快来吧。",
+  游戏: "开黑上分、刷本打宝、选择职业与加点；和熟悉的游戏角色互动，定制属于你的支线与结局。",
+  电影: "与经典电影人物对话，重温名场面；解锁角色幕后设定，聊聊你的平行结局。",
+  工具: "超实用 AI 工具，这里应有尽有，快来体验。",
+  明星: "模拟采访、粉丝应援、花式互动；和你喜爱的明星来一场近距离对话。",
+  历史人物: "穿越对话先贤名将，讨论治国、兵法与学术；让历史在对谈中“活”起来。",
+  甜系女友: "软萌治愈、贴心陪伴、甜度超标；每天都能被温柔环绕。",
+  霸道总裁: "商战剧情、强势偏爱、只对你温柔；从办公室到宴会场，全是你的主场。",
+  傲娇女友: "嘴上不饶人、心里很在乎；解锁 tsundere 的傲娇与撒糖两面性。",
+  高冷御姐: "成熟理性、气场拉满；偶尔的温柔破防更让人心动。",
+  系统: "穿越/升级/养成系统上线！随机任务、隐藏奖励、专属成长线等你探索。",
+};
+
+
+// 直接复用你原来定义的 CATE_DESC 文案
+const CATEGORIES: { title: string; items: Item[]; desc?: string }[] =
+  CATEGORY_TITLES.map((title) => {
+    const items = ALL.filter((p) => fitsCategory(p, title)).map(toItem);
+    return { title, items, desc: CATE_DESC[title] };
+  });
+
 
   // 到底提示
   const endRef = useRef<HTMLDivElement>(null);
@@ -743,20 +813,7 @@ function MessagesPage() {
     </div>
   );
 }
-function SearchPage() {
-  const [sp] = useSearchParams();
-  const q = sp.get("q") || "";
-  return (
-    <div className="pt-16">
-      <div className={`${WRAPPER} py-10`}>
-        <h2 className="text-xl font-semibold mb-4">搜索</h2>
-        <div className="border rounded-xl p-6 bg-white/80 backdrop-blur shadow">
-          关键词：<b>{q || "(空)"}</b>（预留：搜索人物卡/历史会话）
-        </div>
-      </div>
-    </div>
-  );
-}
+
 
 /* ========= 顶层：挂载路由 + 顶部导航 ========= */
 export default function App() {

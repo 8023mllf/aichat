@@ -1,4 +1,3 @@
-// src/pages/Theatre.tsx
 import React, { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import * as PM from "../promos";
@@ -7,21 +6,52 @@ const WRAPPER = "w-11/12 md:w-4/5 lg:w-3/4 mx-auto";
 
 type Item = { name: string; promoSlug: string; file: string };
 
-// 从 promos 收集基础卡片（用你的内置/自定义人物都行）
-function pickBaseList(): Item[] {
-  const list =
-    (PM as any).listPromos?.() ||
-    ((PM as any).PROMOS || []);
-  return (list as any[]).map((p: any) => ({
-    name: p.name,
-    promoSlug: p.promoSlug || p.personaSlug || p.slug,
-    file: p.file,
+// ===== 工具：从 promos 收集数据（兼容内置 + 自定义） =====
+type AnyPromo = {
+  name: string;
+  promoSlug?: string;
+  personaSlug?: string;
+  slug?: string;
+  file?: string;
+  tags?: {
+    traits?: string[];
+    background?: string | string[];
+    style?: string[];
+  };
+};
+
+function allPromosForHome(): AnyPromo[] {
+  // 你在 promos.ts 里已经提供了 listCustomPromos / PROMOS
+  const helper = (PM as any).listPromos?.();
+  const raw: AnyPromo[] = helper || ((PM as any).allPromos?.() || (PM as any).PROMOS || []);
+  return raw.map((p: any) => ({
+    ...p,
+    tags: p.tags ?? p.categories ?? {}, // 兼容 categories 写法
   }));
 }
-const ALL = pickBaseList();
-const makeMany = (n: number): Item[] =>
-  Array.from({ length: n }, (_, i) => ALL[i % ALL.length]);
 
+// 判断该人物是否匹配某个类别（用 tags.background 做主键；traits/style 次要兜底）
+function fitsCategory(p: AnyPromo, cat: string): boolean {
+  const tags = p.tags || {};
+  const arr = (v: any) => (Array.isArray(v) ? v : v ? [v] : []);
+  const has = (v: any) => arr(v).some((x) => String(x).includes(cat));
+  // 优先 background，兼容“海龟汤”“规则怪谈”等
+  if (has(tags.background)) return true;
+  // 兜底：traits/style 里包含该词也算
+  if (has(tags.traits)) return true;
+  if (has(tags.style)) return true;
+  return false;
+}
+
+function toItem(p: AnyPromo): Item {
+  return {
+    name: p.name || (p.slug as string) || "未命名",
+    promoSlug: p.promoSlug || p.personaSlug || (p.slug as string),
+    file: p.file || "/imgs/placeholder.png",
+  };
+}
+
+// ===== 小剧场分类文案（你原来的保持不变）=====
 const ST_DESC: Record<string, string> = {
   海龟汤: "经典“水平思考”推理：我只回答“是/否/无关”，你通过提问，一步步还原故事的离奇真相。",
   规则怪谈: "身处诡异世界，唯有遵守规则才能活下去；每条规则背后都藏着代价与线索。",
@@ -33,17 +63,19 @@ const ST_DESC: Record<string, string> = {
   剧本杀: "阵营、任务、线索、推理与反转；沉浸式角色扮演，找出真相或达成你的阵营目标。",
 };
 
-const CATEGORIES = [
-  { title: "海龟汤", items: makeMany(8), desc: ST_DESC["海龟汤"] },
-  { title: "规则怪谈", items: makeMany(8), desc: ST_DESC["规则怪谈"] },
-  { title: "我是爽文男主", items: makeMany(8), desc: ST_DESC["我是爽文男主"] },
-  { title: "玄幻小说之我是萧炎", items: makeMany(8), desc: ST_DESC["玄幻小说之我是萧炎"] },
-  { title: "我的冒险我做主", items: makeMany(8), desc: ST_DESC["我的冒险我做主"] },
-  { title: "我的傲娇女友我来宠", items: makeMany(8), desc: ST_DESC["我的傲娇女友我来宠"] },
-  { title: "开局五百亿", items: makeMany(8), desc: ST_DESC["开局五百亿"] },
-  { title: "剧本杀", items: makeMany(8), desc: ST_DESC["剧本杀"] },
+// 想展示的分类标题（按你页面顺序来）
+const CATEGORY_TITLES = [
+  "海龟汤",
+  "规则怪谈",
+  "我是爽文男主",
+  "玄幻小说之我是萧炎",
+  "我的冒险我做主",
+  "我的傲娇女友我来宠",
+  "开局五百亿",
+  "剧本杀",
 ];
 
+// ===== 横滑行 =====
 function CategoryRow({
   title,
   items,
@@ -57,8 +89,9 @@ function CategoryRow({
   const scrollerRef = useRef<HTMLDivElement>(null);
 
   const data = useMemo(() => {
+    // 去重
     const map = new Map<string, Item>();
-    for (const it of items) if (!map.has(it.promoSlug)) map.set(it.promoSlug, it);
+    for (const it of items) if (it?.promoSlug && !map.has(it.promoSlug)) map.set(it.promoSlug, it);
     return Array.from(map.values());
   }, [items]);
 
@@ -76,7 +109,7 @@ function CategoryRow({
   const startX = useRef(0);
   const startLeft = useRef(0);
   const movedRef = useRef(0);
-  const capturedRef = useRef(false); // ★ 只在不是点按钮时才捕获
+  const capturedRef = useRef(false);
 
   const onPointerDown = (e: React.PointerEvent) => {
     const el = scrollerRef.current;
@@ -191,6 +224,7 @@ function CategoryRow({
                   className="w-full h-full object-cover"
                   draggable={false}
                   onDragStart={(e) => e.preventDefault()}
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).src = "/imgs/placeholder.png"; }}
                 />
                 <div className="absolute inset-x-0 bottom-0 p-3 text-white bg-gradient-to-t from-black/60 to-transparent">
                   <div className="text-base md:text-lg font-medium drop-shadow">{p.name}</div>
@@ -204,15 +238,27 @@ function CategoryRow({
   );
 }
 
+// ===== 页面 =====
 export default function TheatrePage() {
-  const navigate = useNavigate();              // ← 必须声明
+  const navigate = useNavigate();
   const [kw, setKw] = useState("");
+
+  // 全量人物
+  const ALL = allPromosForHome();
+
+  // 按标题构造每个栏位：只放匹配该类别的卡片
+  const CATEGORIES = useMemo(() => {
+    return CATEGORY_TITLES.map((title) => {
+      const items = ALL.filter((p) => fitsCategory(p, title)).map(toItem);
+      return { title, items, desc: ST_DESC[title] };
+    });
+  }, [ALL]);
 
   return (
     <div className="min-h-screen text-gray-900">
       <div className="pt-16" />
       <main className={`${WRAPPER} pb-16`}>
-        {/* 顶部搜索框（找回） */}
+        {/* 顶部搜索（保持你原来的交互） */}
         <section className="my-6 md:my-8">
           <form
             onSubmit={(e) => {
@@ -226,13 +272,12 @@ export default function TheatrePage() {
             <input
               value={kw}
               onChange={(e) => setKw(e.target.value)}
-              placeholder="搜剧本、关键词或你想扮演的角色，例如：校园 / 推理 / 火焰异火"
-              className="w-full border rounded-full px-5 py-2.5 outline-none bg-white/90 backdrop-blur focus:ring-2 focus:ring-pink-500/30"
+              placeholder="搜剧本、关键词或想扮演的角色，例如：海龟汤 / 推理 / 火焰异火"
+              className="w-full border rounded-full px-4 py-2 outline-none focus:ring-2 focus:ring-pink-500/30"
             />
           </form>
         </section>
 
-        {/* 标题行 */}
         <section className="mb-4">
           <div className="relative">
             <h2 className="inline-block text-2xl md:text-3xl font-extrabold tracking-wide text-transparent bg-clip-text bg-gradient-to-r from-pink-600 via-rose-500 to-fuchsia-600">
@@ -245,8 +290,9 @@ export default function TheatrePage() {
           </div>
         </section>
 
+        {/* 分区渲染 */}
         {CATEGORIES.map((c) => (
-          <CategoryRow key={c.title} title={`#${c.title}`} items={c.items} desc={c.desc} />
+          <CategoryRow key={c.title} title={c.title} items={c.items} desc={c.desc} />
         ))}
       </main>
     </div>
