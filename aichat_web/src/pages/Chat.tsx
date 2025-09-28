@@ -1,32 +1,23 @@
+// src/pages/Chat.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { getPromoBySlug } from "../promos";
 import { createSession, streamChat, ttsToBlob } from "../api";
-import { AudioQueue } from "../audioQueue";
-import { isSpeechSupported, startSpeechOnce } from "../mic";
+import { beginVoiceCapture } from "../mic";
 
-type Msg = { role: "user" | "assistant"; content: string };
+type BaseMsg = { role: "user" | "assistant"; ts: number };
+type TextMsg = BaseMsg & { kind: "text"; content: string; audioUrl?: string };
+type VoiceMsg = BaseMsg & { kind: "voice"; audioUrl: string; asr?: string };
+type ChatMsg = TextMsg | VoiceMsg;
 
-/* 收起/展开侧栏的小方框按钮（支持内联/浮动两种模式） */
 function ToggleSidebarButton({
-  open,
-  onToggle,
-  inline = false,
-}: {
-  open: boolean;
-  onToggle: () => void;
-  inline?: boolean;
-}) {
+  open, onToggle, inline = false,
+}: { open: boolean; onToggle: () => void; inline?: boolean }) {
   const cls = inline
     ? "ml-auto w-8 h-8 rounded-md border bg-white/90 backdrop-blur shadow hover:bg-white transition flex items-center justify-center"
     : "fixed left-2 top-[72px] z-50 w-8 h-8 rounded-md border bg-white/90 backdrop-blur shadow hover:bg-white transition flex items-center justify-center";
   return (
-    <button
-      aria-label={open ? "收起侧边栏" : "展开侧边栏"}
-      title={open ? "收起侧边栏" : "展开侧边栏"}
-      onClick={onToggle}
-      className={cls}
-    >
+    <button aria-label={open ? "收起侧边栏" : "展开侧边栏"} title={open ? "收起侧边栏" : "展开侧边栏"} onClick={onToggle} className={cls}>
       <svg viewBox="0 0 24 24" className="w-5 h-5 opacity-80">
         {open ? (
           <g fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -51,42 +42,33 @@ export default function ChatPage() {
   const promo = getPromoBySlug(promoSlug);
 
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Msg[]>([]);
+  const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [speaking, setSpeaking] = useState(false);
 
-  // 用户头像（默认 moren.jpg，可在“我的”更换）
-  const [userAvatar, setUserAvatar] = useState<string>(
-    localStorage.getItem("user_avatar") || "/imgs/moren.jpg"
-  );
+  const [recording, setRecording] = useState(false);
+  const stopCaptureRef = useRef<null | (() => Promise<{ blob: Blob; asr: string }>)>(null);
+
+  const [userAvatar, setUserAvatar] = useState<string>(localStorage.getItem("user_avatar") || "/imgs/moren.jpg");
   useEffect(() => {
     const onChanged = () => setUserAvatar(localStorage.getItem("user_avatar") || "/imgs/moren.jpg");
     window.addEventListener("avatar-changed", onChanged as any);
     return () => window.removeEventListener("avatar-changed", onChanged as any);
   }, []);
 
-  // 侧栏显示/隐藏（记住状态）
-  const [sideOpen, setSideOpen] = useState<boolean>(() => {
-    return localStorage.getItem("chat_sidebar_open") !== "0";
-  });
-  useEffect(() => {
-    localStorage.setItem("chat_sidebar_open", sideOpen ? "1" : "0");
-  }, [sideOpen]);
+  const [sideOpen, setSideOpen] = useState<boolean>(() => localStorage.getItem("chat_sidebar_open") !== "0");
+  useEffect(() => { localStorage.setItem("chat_sidebar_open", sideOpen ? "1" : "0"); }, [sideOpen]);
 
-  // 音频 & 中止
-  const audioQ = useMemo(() => new AudioQueue(), []);
+  const players = useRef<Record<string, HTMLAudioElement>>({});
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // 每个人格独立 session
   const storageKey = `rp_session_${promo.personaSlug}`;
   useEffect(() => {
     (async () => {
       const saved = localStorage.getItem(storageKey);
-      if (saved) {
-        setSessionId(saved);
-      } else {
+      if (saved) setSessionId(saved);
+      else {
         const id = await createSession(promo.personaSlug);
         localStorage.setItem(storageKey, id);
         setSessionId(id);
@@ -94,32 +76,36 @@ export default function ChatPage() {
     })();
   }, [promo.personaSlug]);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  function togglePlay(id: string, url: string) {
+    if (!url) return;
+    let audio = players.current[id];
+    if (!audio) { audio = new Audio(url); players.current[id] = audio; }
+    if (audio.paused) audio.play(); else audio.pause();
+  }
 
   async function sendText(text: string) {
     if (!sessionId || !text.trim()) return;
-    setMessages((prev) => [...prev, { role: "user", content: text }]);
+    setMessages((p) => [...p, { role: "user", kind: "text", content: text.trim(), ts: Date.now() }]);
     setInput("");
     setLoading(true);
     const ac = new AbortController();
     abortRef.current = ac;
 
     let assistant = "";
-    setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
-    const idx = messages.length + 1;
+    setMessages((p) => [...p, { role: "assistant", kind: "text", content: "", ts: Date.now() } as TextMsg]);
 
     try {
       await streamChat({
         sessionId,
-        userMessage: text,
+        userMessage: text.trim(),
         personaSlug: promo.personaSlug,
         onDelta: (d) => {
           assistant += d;
           setMessages((prev) => {
             const copy = [...prev];
-            copy[idx] = { role: "assistant", content: assistant };
+            copy[copy.length - 1] = { ...(copy[copy.length - 1] as TextMsg), content: assistant } as TextMsg;
             return copy;
           });
         },
@@ -128,24 +114,79 @@ export default function ChatPage() {
     } finally {
       setLoading(false);
       abortRef.current = null;
-      if (assistant.trim()) {
-        setSpeaking(true);
-        const blob = await ttsToBlob(assistant, { format: "mp3" });
-        await audioQ.enqueue(blob);
-        setSpeaking(false);
-      }
     }
   }
 
-  async function handleMic() {
-    if (!isSpeechSupported()) { alert("当前浏览器不支持语音识别（Web Speech API）。"); return; }
+  async function onMicClick() {
+    if (!sessionId) return;
+
+    if (!recording) {
+      try {
+        const stop = await beginVoiceCapture();
+        stopCaptureRef.current = stop;
+        setRecording(true);
+      } catch {
+        alert("无法开始录音，请检查麦克风权限。");
+      }
+      return;
+    }
+
+    setRecording(false);
+    const stop = stopCaptureRef.current;
+    stopCaptureRef.current = null;
+    if (!stop) return;
+
+    const { blob, asr } = await stop();
+    const url = URL.createObjectURL(blob);
+
+    setMessages((p) => [...p, { role: "user", kind: "voice", audioUrl: url, asr, ts: Date.now() }]);
+
+    setMessages((p) => [...p, { role: "assistant", kind: "text", content: "", ts: Date.now() } as TextMsg]);
+
+    const promptForLLM =
+      asr && asr.trim()
+        ? asr.trim()
+        : "（用户刚刚发送了一段语音，请结合上下文自然回复，不必提及“语音”二字。）";
+
+    const ac = new AbortController();
+    abortRef.current = ac;
+
+    let assistantText = "";
+    setLoading(true);
     try {
-      const text = await startSpeechOnce("zh-CN");
-      setInput(text);
-    } catch (e: any) { alert("语音识别失败：" + String(e)); }
+      await streamChat({
+        sessionId,
+        userMessage: promptForLLM,
+        personaSlug: promo.personaSlug,
+        onDelta: (d) => {
+          assistantText += d;
+          setMessages((prev) => {
+            const copy = [...prev];
+            copy[copy.length - 1] = { ...(copy[copy.length - 1] as TextMsg), content: assistantText } as TextMsg;
+            return copy;
+          });
+        },
+        signal: ac.signal,
+      });
+    } finally {
+      setLoading(false);
+      abortRef.current = null;
+    }
+
+    if (assistantText.trim()) {
+      try {
+        const ttsBlob = await ttsToBlob(assistantText, { format: "mp3" });
+        const aUrl = URL.createObjectURL(ttsBlob);
+        setMessages((prev) => {
+          const copy = [...prev];
+          const last = copy[copy.length - 1] as TextMsg;
+          copy[copy.length - 1] = { ...last, audioUrl: aUrl };
+          return copy;
+        });
+      } catch { /* 保留文本即可 */ }
+    }
   }
 
-  // 新建聊天
   async function newChat() {
     const id = await createSession(promo.personaSlug);
     localStorage.setItem(storageKey, id);
@@ -154,28 +195,22 @@ export default function ChatPage() {
   }
 
   return (
-    // 整页高度锁定 + 禁止纵向滚动
     <div className="h-screen overflow-hidden relative bg-gradient-to-b from-white via-[#f7fbff] to-white">
-      {/* 顶部栏固定高度 48px */}
       <header className="h-12 z-30 bg-white/70 backdrop-blur border-b">
         <div className="mx-auto w-11/12 max-w-7xl h-full flex items-center justify-between">
           <Link to="/" className="text-sm text-gray-700 hover:underline">← 返回首页</Link>
           <div className="font-semibold">{promo.name} · 对话</div>
-          <div className="text-sm text-gray-500">{speaking ? "🔊 播放中…" : ""}</div>
+          <div className="text-sm text-gray-500" />
         </div>
       </header>
 
-      {/* 左侧侧边栏（固定） */}
       <aside
         className={`fixed top-12 bottom-0 left-0 z-40 w-72 bg-white/90 backdrop-blur border-r
           transition-transform duration-300 ${sideOpen ? "translate-x-0" : "-translate-x-full"}`}
       >
         <div className="h-full flex flex-col">
           <div className="p-3">
-            <button
-              onClick={newChat}
-              className="w-full rounded-lg bg-indigo-600 text-white py-2 shadow hover:shadow-md"
-            >
+            <button onClick={newChat} className="w-full rounded-lg bg-indigo-600 text-white py-2 shadow hover:shadow-md">
               新建聊天
             </button>
           </div>
@@ -188,48 +223,64 @@ export default function ChatPage() {
         </div>
       </aside>
 
-      {/* 侧栏收起时的浮动展开按钮 */}
       {!sideOpen && <ToggleSidebarButton open={sideOpen} onToggle={() => setSideOpen(true)} />}
 
-      {/* 主体：高度 = 视口 - 顶部栏；禁止自身滚动，内部卡片滚动 */}
       <main
         className={`h-[calc(100vh-48px)] overflow-hidden px-4 md:px-6 transition-[margin-left] duration-300 ${
           sideOpen ? "md:ml-72" : "md:ml-0"
         }`}
       >
-        {/* 对话卡片更宽：md 5/6、lg 2/3、xl 3/5；并且高撑满 main */}
+        {/* 关键：min-h-0 允许内部滚动容器真正滚动 */}
         <div className="mx-auto h-full w-11/12 md:w-5/6 lg:w-2/3 xl:w-3/5 max-w-5xl">
-          <div className="h-full rounded-3xl border border-white/50 bg-transparent shadow-xl overflow-hidden flex flex-col">
-            {/* 上半：消息区域（填满剩余高度，内部滚动） */}
-            <section className="relative flex-1">
-              {/* 背景图固定 + 轻薄遮罩 */}
+          <div className="h-full rounded-3xl border border-white/50 bg-transparent shadow-xl overflow-hidden flex flex-col min-h-0">
+            <section className="relative flex-1 min-h-0">
+              {/* 背景层降到负 z-index + 禁用指针事件，避免遮挡和“放大”错觉 */}
               <div
-                className="absolute inset-0"
-                style={{
-                  backgroundImage: `url(${promo.file})`,
-                  backgroundSize: "cover",
-                  backgroundPosition: "center",
-                }}
+                className="absolute inset-0 -z-10 pointer-events-none bg-center bg-cover"
+                style={{ backgroundImage: `url(${promo.file})` }}
               />
-              {/* 消息列表：真正滚动的地方 */}
-              <div className="relative h-full p-4 overflow-y-auto">
+              {/* 可选：轻微遮罩提高对比度 */}
+              <div className="absolute inset-0 -z-10 pointer-events-none bg-white/10" />
+
+              {/* 真正滚动的地方：放到更高层级 */}
+              <div className="relative z-10 h-full p-4 overflow-y-auto">
                 {messages.map((m, i) => {
                   const isUser = m.role === "user";
+                  const id = `msg-${i}`;
                   return (
-                    <div key={i} className={`my-3 flex items-end gap-2 ${isUser ? "justify-end" : "justify-start"}`}>
-                      {!isUser && (
-                        <img src={promo.file} alt="ai" className="w-8 h-8 rounded-full object-cover shadow" />
-                      )}
+                    <div key={id} className={`my-3 flex items-end gap-2 ${isUser ? "justify-end" : "justify-start"}`}>
+                      {!isUser && <img src={promo.file} alt="ai" className="w-8 h-8 rounded-full object-cover shadow" />}
                       <div
                         className={`max-w-[78%] px-3 py-2 rounded-2xl whitespace-pre-wrap ${
                           isUser ? "bg-white text-gray-900 border rounded-br-sm" : "bg-black text-white rounded-bl-sm"
                         }`}
                       >
-                        {m.content}
+                        {m.kind === "voice" && (
+                          <button
+                            onClick={() => togglePlay(id, m.audioUrl)}
+                            className={`w-full text-left rounded-lg border px-3 py-2 ${
+                              isUser ? "border-gray-300 text-gray-900" : "border-white/40 text-white"
+                            }`}
+                          >
+                            ▶︎ {isUser ? "我的语音" : "语音播放"}
+                          </button>
+                        )}
+                        {m.kind === "text" && m.audioUrl && (
+                          <>
+                            <button
+                              onClick={() => togglePlay(id, m.audioUrl!)}
+                              className={`mb-2 w-full text-left rounded-lg border px-3 py-2 ${
+                                isUser ? "border-gray-300 text-gray-900" : "border-white/40 text-white"
+                              }`}
+                            >
+                              ▶︎ 语音播放
+                            </button>
+                            <div>{m.content || "…"}</div>
+                          </>
+                        )}
+                        {m.kind === "text" && !m.audioUrl && <div>{m.content || "…"}</div>}
                       </div>
-                      {isUser && (
-                        <img src={userAvatar} alt="me" className="w-8 h-8 rounded-full object-cover shadow" />
-                      )}
+                      {isUser && <img src={userAvatar} alt="me" className="w-8 h-8 rounded-full object-cover shadow" />}
                     </div>
                   );
                 })}
@@ -237,7 +288,6 @@ export default function ChatPage() {
               </div>
             </section>
 
-            {/* 下半：输入条（始终可见，贴住卡片底部） */}
             <div className="border-t bg-white/85 backdrop-blur p-3">
               <div className="flex gap-2 items-center">
                 <input
@@ -259,8 +309,12 @@ export default function ChatPage() {
                 >
                   发送
                 </button>
-                <button onClick={handleMic} className="px-3 py-2 rounded border" title="语音识别（实验）">
-                  🎙️
+                <button
+                  onClick={onMicClick}
+                  className={`px-3 py-2 rounded border ${recording ? "border-red-500 text-red-600" : ""}`}
+                  title={recording ? "结束并发送语音" : "语音输入（点击开始，再次点击结束）"}
+                >
+                  {recording ? "● 录音中" : "🎙️"}
                 </button>
                 {loading && (
                   <button onClick={() => abortRef.current?.abort()} className="px-3 py-2 rounded border">
